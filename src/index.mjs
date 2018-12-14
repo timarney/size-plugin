@@ -13,34 +13,48 @@
  * License for the specific language governing permissions and limitations under
  * the License.
  */
-
-import path from 'path';
-import promisify from 'util.promisify';
-import globPromise from 'glob';
-import minimatch from 'minimatch';
-import gzipSize from 'gzip-size';
-import chalk from 'chalk';
-import prettyBytes from 'pretty-bytes';
-import escapeRegExp from 'escape-string-regexp';
-import { toMap, dedupe } from './util.mjs';
+import fs from "fs";
+import path from "path";
+import promisify from "util.promisify";
+import globPromise from "glob";
+import minimatch from "minimatch";
+import gzipSize from "gzip-size";
+import chalk from "chalk";
+import prettyBytes from "pretty-bytes";
+import escapeRegExp from "escape-string-regexp";
+import { toMap, dedupe } from "./util.mjs";
 
 const glob = promisify(globPromise);
 
-const NAME = 'SizePlugin';
+const NAME = "SizePlugin";
 
 export default class SizePlugin {
-	constructor (options) {
+	constructor(options) {
 		this.options = options || {};
-		this.pattern = this.options.pattern || '**/*.{mjs,js,css,html}';
+		this.pattern = this.options.pattern || "**/*.{mjs,js,css,html}";
 		this.exclude = this.options.exclude;
+		this.save = this.options.save || function() {};
+		this.jsonPath = path.resolve(
+			process.cwd(),
+			this.options.filename || "build-sizes.json"
+		);
+	}
+
+	async writeFile(file, data) {
+		return new Promise((resolve, reject) => {
+			fs.writeFile(file, data, error => {
+				if (error) reject(error);
+				resolve();
+			});
+		});
 	}
 
 	reverseTemplate(filename, template) {
 		// @todo - find a way to actually obtain values here.
-		if (typeof template === 'function') {
+		if (typeof template === "function") {
 			template = template({
 				chunk: {
-					name: 'main'
+					name: "main"
 				}
 			});
 		}
@@ -48,32 +62,34 @@ export default class SizePlugin {
 		const replace = [];
 		let count = 0;
 		function replacer() {
-			let out = '';
+			let out = "";
 			for (let i = 1; i < arguments.length - 2; i++) {
 				// eslint-disable-next-line prefer-spread,prefer-rest-params
 				let value = arguments[i];
-				if (replace[i - 1]) value = value.replace(/./g, '*');
+				if (replace[i - 1]) value = value.replace(/./g, "*");
 				out += value;
 			}
 			return out;
 		}
-		const reg = template.replace(/(^|.+?)(?:\[([a-z]+)(?::(\d))?\]|$)/g, (s, before, type, size) => {
-			let out = '';
-			if (before) {
-				out += `(${escapeRegExp(before)})`;
-				replace[count++] = false;
+		const reg = template.replace(
+			/(^|.+?)(?:\[([a-z]+)(?::(\d))?\]|$)/g,
+			(s, before, type, size) => {
+				let out = "";
+				if (before) {
+					out += `(${escapeRegExp(before)})`;
+					replace[count++] = false;
+				}
+				if (type === "hash" || type === "contenthash" || type === "chunkhash") {
+					const len = Math.round(size) || hashLength;
+					out += `([0-9a-zA-Z]{${len}})`;
+					replace[count++] = true;
+				} else if (type) {
+					out += "(.*?)";
+					replace[count++] = false;
+				}
+				return out;
 			}
-			if (type==='hash' || type==='contenthash' || type==='chunkhash') {
-				const len = Math.round(size) || hashLength;
-				out += `([0-9a-zA-Z]{${len}})`;
-				replace[count++] = true;
-			}
-			else if (type) {
-				out += '(.*?)';
-				replace[count++] = false;
-			}
-			return out;
-		});
+		);
 		const matcher = new RegExp(`^${reg}$`);
 		return matcher.test(filename) && filename.replace(matcher, replacer);
 	}
@@ -81,8 +97,8 @@ export default class SizePlugin {
 	stripHash(filename) {
 		return (
 			this.reverseTemplate(filename, this.output.filename) ||
-      this.reverseTemplate(filename, this.output.chunkFilename) ||
-      filename
+			this.reverseTemplate(filename, this.output.chunkFilename) ||
+			filename
 		);
 	}
 
@@ -97,60 +113,90 @@ export default class SizePlugin {
 			);
 		}
 		// for webpack version < 3
-		return compiler.plugin('after-emit', (compilation, callback) => {
+		return compiler.plugin("after-emit", (compilation, callback) => {
 			this.outputSizes(compilation.assets)
 				.catch(console.error)
 				.then(callback);
 		});
 	}
 
-	async outputSizes (assets) {
+	async outputSizes(assets) {
 		// map of filenames to their previous size
 		// Fix #7 - fast-async doesn't allow non-promise values.
 		const sizesBefore = await Promise.resolve(this.sizes);
 		const isMatched = minimatch.filter(this.pattern);
-		const isExcluded = this.exclude ? minimatch.filter(this.exclude) : () => false;
-		const assetNames = Object.keys(assets).filter(file => isMatched(file) && !isExcluded(file));
-		const sizes = await Promise.all(assetNames.map(name => gzipSize(assets[name].source())));
+		const isExcluded = this.exclude
+			? minimatch.filter(this.exclude)
+			: () => false;
+		const assetNames = Object.keys(assets).filter(
+			file => isMatched(file) && !isExcluded(file)
+		);
+		const sizes = await Promise.all(
+			assetNames.map(name => gzipSize(assets[name].source()))
+		);
 
 		// map of de-hashed filenames to their final size
-		this.sizes = toMap(assetNames.map(filename => this.stripHash(filename)), sizes);
+		this.sizes = toMap(
+			assetNames.map(filename => this.stripHash(filename)),
+			sizes
+		);
 
 		// get a list of unique filenames
 		const files = Object.keys(this.sizes).filter(dedupe);
 
 		const width = Math.max(...files.map(file => file.length));
-		let output = '';
+		let output = "";
+
+		let fileSizes = [];
+
 		for (const name of files) {
 			const size = this.sizes[name] || 0;
 			const delta = size - (sizesBefore[name] || 0);
-			const msg = new Array(width - name.length + 2).join(' ') + name + ' ⏤  ';
-			const color = size > 100 * 1024 ? 'red' : size > 40 * 1024 ? 'yellow' : size > 20 * 1024 ? 'cyan' : 'green';
+			const msg = new Array(width - name.length + 2).join(" ") + name + " ⏤  ";
+			const color =
+				size > 100 * 1024
+					? "red"
+					: size > 40 * 1024
+					? "yellow"
+					: size > 20 * 1024
+					? "cyan"
+					: "green";
 			let sizeText = chalk[color](prettyBytes(size));
 			if (delta) {
-				let deltaText = (delta > 0 ? '+' : '') + prettyBytes(delta);
+				let deltaText = (delta > 0 ? "+" : "") + prettyBytes(delta);
 				if (delta > 1024) {
 					sizeText = chalk.bold(sizeText);
 					deltaText = chalk.red(deltaText);
-				}
-				else if (delta < -10) {
+				} else if (delta < -10) {
 					deltaText = chalk.green(deltaText);
 				}
 				sizeText += ` (${deltaText})`;
 			}
-			output += msg + sizeText + '\n';
+			output += msg + sizeText + "\n";
+
+			fileSizes.push({
+				filename: name,
+				filesize: size
+			});
 		}
 		if (output) {
+			try {
+				const report = [{ timestamp: +new Date(), files: fileSizes }];
+				await this.writeFile(this.jsonPath, JSON.stringify(report));
+			} catch (e) {
+				console.log(e.message);
+			}
+
 			console.log(output);
 		}
 	}
 
-	async getSizes (cwd) {
+	async getSizes(cwd) {
 		const files = await glob(this.pattern, { cwd, ignore: this.exclude });
 
-		const sizes = await Promise.all(files.map(
-			file => gzipSize.file(path.join(cwd, file)).catch(() => null)
-		));
+		const sizes = await Promise.all(
+			files.map(file => gzipSize.file(path.join(cwd, file)).catch(() => null))
+		);
 
 		return toMap(files.map(filename => this.stripHash(filename)), sizes);
 	}
