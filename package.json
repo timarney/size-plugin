@@ -1,5 +1,5 @@
 {
-  "name": "size-plugin",
+  "name": "cds-size-plugin",
   "version": "1.1.2",
   "description": "Tracks your Webpack asset sizes over time.",
   "main": "dist/size-plugin.js",
