@@ -148,7 +148,7 @@ export default class SizePlugin {
 		let output = "";
 
 		let fileSizes = [];
-
+		let i = 0;
 		for (const name of files) {
 			const size = this.sizes[name] || 0;
 			const delta = size - (sizesBefore[name] || 0);
@@ -175,9 +175,11 @@ export default class SizePlugin {
 			output += msg + sizeText + "\n";
 
 			fileSizes.push({
-				filename: name,
+				filename: assetNames[i],
 				filesize: size
 			});
+
+			i++;
 		}
 		if (output) {
 			try {
