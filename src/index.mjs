@@ -28,6 +28,8 @@ const glob = promisify(globPromise);
 
 const NAME = "SizePlugin";
 
+let fileSizes = []
+
 export default class SizePlugin {
 	constructor(options) {
 		this.options = options || {};
@@ -38,6 +40,7 @@ export default class SizePlugin {
 			process.cwd(),
 			this.options.filename || "build-sizes.json"
 		);
+		this.fileSizes = fileSizes;
 	}
 
 	async writeFile(file, data) {
@@ -121,6 +124,7 @@ export default class SizePlugin {
 	}
 
 	async outputSizes(assets) {
+
 		// map of filenames to their previous size
 		// Fix #7 - fast-async doesn't allow non-promise values.
 		const sizesBefore = await Promise.resolve(this.sizes);
@@ -131,6 +135,7 @@ export default class SizePlugin {
 		const assetNames = Object.keys(assets).filter(
 			file => isMatched(file) && !isExcluded(file)
 		);
+
 		const sizes = await Promise.all(
 			assetNames.map(name => gzipSize(assets[name].source()))
 		);
@@ -147,7 +152,6 @@ export default class SizePlugin {
 		const width = Math.max(...files.map(file => file.length));
 		let output = "";
 
-		let fileSizes = [];
 		let i = 0;
 		for (const name of files) {
 			const size = this.sizes[name] || 0;
@@ -172,10 +176,10 @@ export default class SizePlugin {
 				}
 				sizeText += ` (${deltaText})`;
 			}
-			output += msg + sizeText + "\n";
+			output += msg + sizeText  +"\n";
 
-			fileSizes.push({
-				filename: assetNames[i],
+			this.fileSizes.push({
+				filename: name,
 				filesize: size
 			});
 
@@ -183,7 +187,7 @@ export default class SizePlugin {
 		}
 		if (output) {
 			try {
-				const report = [{ timestamp: +new Date(), files: fileSizes }];
+				const report = [{ timestamp: +new Date(), files: this.fileSizes }];
 				await this.writeFile(this.jsonPath, JSON.stringify(report));
 			} catch (e) {
 				console.log(e.message);
@@ -195,11 +199,9 @@ export default class SizePlugin {
 
 	async getSizes(cwd) {
 		const files = await glob(this.pattern, { cwd, ignore: this.exclude });
-
 		const sizes = await Promise.all(
 			files.map(file => gzipSize.file(path.join(cwd, file)).catch(() => null))
 		);
-
 		return toMap(files.map(filename => this.stripHash(filename)), sizes);
 	}
 }
